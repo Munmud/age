@@ -21,6 +21,7 @@
 #include "utils/load/ag_load_labels.h"
 #include "utils/load/age_load.h"
 #include "utils/load/csv.h"
+#include "commands/trigger.h"
 
 void vertex_field_cb(void *field, size_t field_len, void *data)
 {
@@ -211,3 +212,72 @@ int create_labels_from_csv_file(char *file_path,
     csv_free(&p);
     return EXIT_SUCCESS;
 }
+
+void create_labels_from_table_row_trigger(
+    TriggerData *trigdata,
+    char *graph_name,
+    Oid graph_oid,
+    char *object_name,
+    int object_id,
+    char *sequence_name)
+{
+    HeapTuple new_row = trigdata->tg_trigtuple;
+    TupleDesc tupdesc = trigdata->tg_relation->rd_att;
+    int natts = tupdesc->natts;
+    graphid object_graph_id;
+    int64 label_id_int;
+    agtype *props = NULL;
+    bool isnull;
+    Form_pg_attribute attr ;
+    Datum val ;
+    char *val_cstr;
+
+    char **header = malloc((sizeof(char *) * natts));
+    char **fields = malloc((sizeof(char *) * natts));
+
+    for (int i = 0; i < natts; i++)
+    {
+        attr = TupleDescAttr(tupdesc, i);
+        if (attr->attisdropped)
+            continue;
+
+        
+        val = heap_getattr(new_row, i + 1, tupdesc, &isnull);
+        val_cstr = NULL;
+
+        if (isnull)
+        {
+            val_cstr = "NULL";
+        }
+        else
+        {
+            Oid typoutput;
+            bool typIsVarlena;
+            getTypeOutputInfo(attr->atttypid, &typoutput, &typIsVarlena);
+            val_cstr = OidOutputFunctionCall(typoutput, val);
+        }
+
+        header[i] = NameStr(attr->attname);
+        fields[i] = val_cstr;
+
+    }
+    if (!sequence_name){
+        label_id_int = strtol(fields[0], NULL, 10);
+    }
+    else{
+        Datum result;
+        result = DirectFunctionCall1(textin, CStringGetDatum(sequence_name));
+        result = DirectFunctionCall1(nextval, result);
+        label_id_int = DatumGetInt64(result);
+    }
+
+    object_graph_id = make_graphid(object_id, label_id_int);
+
+    props = create_agtype_from_list(header, fields, natts, label_id_int);
+
+    insert_vertex_simple(graph_oid, object_name,
+                         object_graph_id, props);
+
+}
+
+

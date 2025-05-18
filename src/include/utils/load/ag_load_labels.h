@@ -38,6 +38,7 @@
 #include "commands/defrem.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
+#include "commands/trigger.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodes.h"
@@ -100,5 +101,14 @@ void vertex_row_cb(int delim __attribute__((unused)), void *data);
 int create_labels_from_csv_file(char *file_path, char *graph_name, Oid graph_oid,
                                 char *object_name, int object_id,
                                 bool id_field_exists);
+
+void create_labels_from_table_row_trigger(
+    TriggerData *trigdata,
+    char *graph_name,
+    Oid graph_oid,
+    char *object_name,
+    int object_id,
+    char *sequence_name);
+
 
 #endif //AG_LOAD_LABELS_H

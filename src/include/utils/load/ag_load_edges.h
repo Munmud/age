@@ -38,6 +38,7 @@
 #include "commands/defrem.h"
 #include "commands/sequence.h"
 #include "commands/tablecmds.h"
+#include "commands/trigger.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodes.h"
@@ -94,5 +95,13 @@ void edge_row_cb(int delim __attribute__((unused)), void *data);
 int create_edges_from_csv_file(char *file_path, char *graph_name, Oid graph_oid,
                                 char *object_name, int object_id );
 
+void create_edges_from_table_row_trigger(
+    TriggerData *trigdata,
+    char *graph_name,
+    Oid graph_oid,
+    char *object_name,
+    int object_id,
+    char *sequence_name);
+ 
 #endif //AG_LOAD_EDGES_H
 

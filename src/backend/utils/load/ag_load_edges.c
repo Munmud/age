@@ -22,6 +22,7 @@
 #include "utils/load/ag_load_edges.h"
 #include "utils/load/age_load.h"
 #include "utils/load/csv.h"
+#include "commands/trigger.h"
 
 void edge_field_cb(void *field, size_t field_len, void *data)
 {
@@ -100,7 +101,7 @@ void edge_row_cb(int delim __attribute__((unused)), void *data)
         end_vertex_graph_id = make_graphid(end_vertex_type_id, end_id_int);
 
         props = create_agtype_from_list_i(cr->header, cr->fields,
-                                          n_fields, 3);
+                                          n_fields, 4);
 
         insert_edge_simple(cr->graph_oid, cr->object_name,
                            object_graph_id, start_vertex_graph_id,
@@ -214,3 +215,90 @@ int create_edges_from_csv_file(char *file_path,
     csv_free(&p);
     return EXIT_SUCCESS;
 }
+
+
+void create_edges_from_table_row_trigger(
+    TriggerData *trigdata,
+    char *graph_name,
+    Oid graph_oid,
+    char *object_name,
+    int object_id,
+    char *sequence_name)
+    {
+
+        size_t i;
+        int64 start_id_int;
+        graphid start_vertex_graph_id;
+        int start_vertex_type_id;
+        
+        int64 end_id_int;
+        graphid end_vertex_graph_id;
+        int end_vertex_type_id;
+        
+        graphid object_graph_id;
+
+        agtype* props = NULL;
+        bool isnull;
+        Datum val;
+        char *val_cstr;
+        Oid typoutput;
+        bool typIsVarlena;
+        Form_pg_attribute attr;
+        int64 row;
+        Datum result;
+
+        HeapTuple new_row = trigdata->tg_trigtuple;
+        TupleDesc tupdesc = trigdata->tg_relation->rd_att;
+        int natts = tupdesc->natts;
+
+        char **header = malloc((sizeof(char *) * natts));
+        char **fields = malloc((sizeof(char *) * natts));
+        for ( i = 0; i < natts; i++)
+        {
+            attr = TupleDescAttr(tupdesc, i);
+            if (attr->attisdropped)
+                continue;
+
+            
+            val = heap_getattr(new_row, i + 1, tupdesc, &isnull);
+            val_cstr = NULL;
+
+            if (isnull)
+            {
+                val_cstr = "NULL";
+            }
+            else
+            {
+                
+                getTypeOutputInfo(attr->atttypid, &typoutput, &typIsVarlena);
+                val_cstr = OidOutputFunctionCall(typoutput, val);
+            }
+
+            header[i] = NameStr(attr->attname);
+            fields[i] = val_cstr;
+        }
+    
+        
+        result = DirectFunctionCall1(textin, CStringGetDatum(sequence_name));
+        result = DirectFunctionCall1(nextval, result);
+        row = DatumGetInt64(result);
+
+        object_graph_id = make_graphid(object_id, row);
+        start_id_int = strtol(fields[0], NULL, 10);
+        start_vertex_type_id = get_label_id(fields[1], graph_oid);
+        end_id_int = strtol(fields[2], NULL, 10);
+        end_vertex_type_id = get_label_id(fields[3], graph_oid);
+
+        start_vertex_graph_id = make_graphid(start_vertex_type_id, start_id_int);
+        end_vertex_graph_id = make_graphid(end_vertex_type_id, end_id_int);
+
+        props = create_agtype_from_list_i(header, fields,
+                                          natts, 4);
+        
+        insert_edge_simple(graph_oid, object_name,
+                           object_graph_id, start_vertex_graph_id,
+                           end_vertex_graph_id, props);
+        pfree(props);
+
+    }
+

@@ -19,6 +19,7 @@
 
 #include "postgres.h"
 
+#include "commands/trigger.h"
 #include "utils/load/ag_load_edges.h"
 #include "utils/load/ag_load_labels.h"
 #include "utils/load/age_load.h"
@@ -100,7 +101,6 @@ agtype* create_agtype_from_list_i(char **header, char **fields,
     agtype_value* value_agtype;
     agtype_in_state result;
     size_t i;
-
     if (start_index + 1 == fields_len)
     {
         return create_empty_agtype();
@@ -247,6 +247,41 @@ Datum load_labels_from_file(PG_FUNCTION_ARGS)
 
 }
 
+PG_FUNCTION_INFO_V1(load_labels_from_table_insert_trigger);
+Datum load_labels_from_table_insert_trigger(PG_FUNCTION_ARGS)
+{
+    TriggerData *trigdata;
+    Oid graph_oid;
+    int32 label_id;
+    char *graph_name = NULL ;
+    char *label_name = NULL ;
+    char *seq_name = NULL ;
+    
+    trigdata = (TriggerData *) fcinfo->context;
+    
+
+    if (trigdata->tg_trigger->tgnargs >= 2) {
+        graph_name = trigdata->tg_trigger->tgargs[0];
+        label_name = trigdata->tg_trigger->tgargs[1];
+        
+    } else {
+        elog(ERROR, "Expected at least 2 trigger arguments: graphname, labelname");
+    }
+
+    if (trigdata->tg_trigger->tgnargs >= 3) {
+        seq_name = trigdata->tg_trigger->tgargs[2];
+    }
+
+    graph_oid = get_graph_oid(graph_name);
+    
+    label_id = get_label_id(label_name, graph_oid);
+
+    create_labels_from_table_row_trigger(trigdata, graph_name, graph_oid, label_name, label_id, seq_name) ;
+
+    // Return NULL for AFTER triggers (it is ignored anyway)
+    return PointerGetDatum(NULL);
+}
+
 PG_FUNCTION_INFO_V1(load_edges_from_file);
 Datum load_edges_from_file(PG_FUNCTION_ARGS)
 {
@@ -293,4 +328,38 @@ Datum load_edges_from_file(PG_FUNCTION_ARGS)
                                label_name_str, label_id);
     PG_RETURN_VOID();
 
+}
+
+PG_FUNCTION_INFO_V1(load_edges_from_table_insert_trigger);
+Datum load_edges_from_table_insert_trigger(PG_FUNCTION_ARGS)
+{
+    TriggerData *trigdata;
+    Oid graph_oid;
+    int32 label_id;
+    char *graph_name = NULL ;
+    char *label_name = NULL ;
+    char *seq_name = NULL ;
+    
+    trigdata = (TriggerData *) fcinfo->context;
+    
+
+    if (trigdata->tg_trigger->tgnargs >= 2) {
+        graph_name = trigdata->tg_trigger->tgargs[0];
+        label_name = trigdata->tg_trigger->tgargs[1];
+    } else {
+        elog(ERROR, "Expected at least 2 trigger arguments: graphname, labelname");
+    }
+
+    if (trigdata->tg_trigger->tgnargs >= 3) {
+        seq_name = trigdata->tg_trigger->tgargs[2];
+    }
+
+    graph_oid = get_graph_oid(graph_name);
+    
+    label_id = get_label_id(label_name, graph_oid);
+
+    create_edges_from_table_row_trigger(trigdata, graph_name, graph_oid, label_name, label_id, seq_name) ;
+
+    // Return NULL for AFTER triggers (it is ignored anyway)
+    return PointerGetDatum(NULL);
 }
