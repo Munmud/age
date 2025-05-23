@@ -54,5 +54,10 @@ int create_edges_from_csv_file(char *file_path, char *graph_name, Oid graph_oid,
                                 char *label_name, int label_id,
                                 bool load_as_agtype);
 
+int create_edges_from_table(char *schema_name, char *table_name, 
+    char *graph_name, Oid graph_oid,
+    char *label_name, int label_id,
+    bool load_as_agtype);
+
 #endif /*AG_LOAD_EDGES_H */
 

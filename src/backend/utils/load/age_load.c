@@ -462,6 +462,71 @@ Datum load_edges_from_file(PG_FUNCTION_ARGS)
     PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(load_edges_from_table);
+Datum load_edges_from_table(PG_FUNCTION_ARGS)
+{
+
+    Name graph_name;
+    Name label_name;
+    Name schema_name;
+    Name table_name;
+    char* graph_name_str;
+    char* label_name_str;
+    char* schema_name_str;
+    char* table_name_str;
+    Oid graph_oid;
+    int32 label_id;
+    bool load_as_agtype;
+
+    if (PG_ARGISNULL(0))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("graph name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(1))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("label name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(2))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("schema name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(3))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("table name must not be NULL")));
+    }
+
+    graph_name = PG_GETARG_NAME(0);
+    label_name = PG_GETARG_NAME(1);
+    schema_name = PG_GETARG_NAME(2);
+    table_name = PG_GETARG_NAME(3);
+    load_as_agtype = PG_GETARG_BOOL(4);
+
+    graph_name_str = NameStr(*graph_name);
+    label_name_str = NameStr(*label_name);
+    schema_name_str = NameStr(*schema_name);
+    table_name_str = NameStr(*table_name);
+
+    if (strcmp(label_name_str, "") == 0)
+    {
+        label_name_str = AG_DEFAULT_LABEL_EDGE;
+    }
+
+    graph_oid = get_or_create_graph(graph_name);
+    label_id = get_or_create_label(graph_oid, graph_name_str,
+                                   label_name_str, LABEL_KIND_EDGE);
+
+    create_edges_from_table(schema_name_str, table_name_str, graph_name_str, graph_oid,
+                               label_name_str, label_id, load_as_agtype);
+    PG_RETURN_VOID();
+}
+
 /*
  * Helper function to create a graph if it does not exist.
  * Just returns Oid of the graph if it already exists.

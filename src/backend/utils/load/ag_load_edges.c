@@ -21,6 +21,7 @@
 
 #include "utils/load/ag_load_edges.h"
 #include "utils/load/csv.h"
+#include "executor/spi.h"
 
 void init_edge_batch_insert(batch_insert_state **batch_state,
                             char *label_name, Oid graph_oid);
@@ -250,6 +251,165 @@ int create_edges_from_csv_file(char *file_path,
     free(cr.fields);
     csv_free(&p);
     return EXIT_SUCCESS;
+}
+
+int create_edges_from_table(char *schema_name,
+                            char *table_name,
+                            char *graph_name,
+                            Oid graph_oid,
+                            char *label_name,
+                            int label_id,
+                            bool load_as_agtype)
+{
+    int ret;
+    int proc;
+    int total_processed = 0;
+    int offset = 0;
+
+    char *label_seq_name;
+    char *query;
+    char **header;
+    char **fields;
+    Oid label_seq_relid;
+    batch_insert_state *batch_state;
+
+    size_t i;
+    int64 start_id_int;
+    graphid start_vertex_graph_id;
+    int start_vertex_type_id;
+
+    int64 end_id_int;
+    graphid end_vertex_graph_id;
+    int end_vertex_type_id;
+    bool first_batch = true;
+    graphid edge_id;
+    int64 entry_id;
+    TupleTableSlot *slot;
+    HeapTuple tuple;
+    TupleDesc tupdesc;
+    SPITupleTable *tuptable;
+
+    label_seq_name = get_label_seq_relation_name(label_name);
+    label_seq_relid = get_relname_relid(label_seq_name, graph_oid);
+
+    // Connect to SPI
+    if ((ret = SPI_connect()) < 0)
+    {
+        elog(ERROR, "SPI_connect failed: %s", SPI_result_code_string(ret));
+        return -1;
+    }
+
+    /* Initialize the batch insert state */
+    init_edge_batch_insert(&batch_state, label_name, graph_oid);
+
+    // Process data in batches
+    do
+    {
+        // Build query with LIMIT and OFFSET for batch processing
+        query = psprintf("SELECT * FROM %s.%s LIMIT %d OFFSET %d",
+                         schema_name, table_name, BATCH_SIZE, offset);
+
+        // Execute the query
+        ret = SPI_execute(query, true, 0);
+        proc = SPI_processed;
+
+        if (ret > 0 && SPI_tuptable != NULL && proc > 0)
+        {
+            tuptable = SPI_tuptable;
+            tupdesc = tuptable->tupdesc;
+
+            if (first_batch)
+            {
+                header = malloc((sizeof(char *) * tupdesc->natts));
+
+                for (int i = 0; i < tupdesc->natts; i++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+                    header[i] = NameStr(attr->attname);
+                }
+                first_batch = false;
+            }
+
+            // Process each tuple/row in this batch
+            for (int i = 0; i < proc; i++)
+            {
+                fields = malloc((sizeof(char *) * tupdesc->natts));
+                tuple = tuptable->vals[i];
+
+                // Log each column value in the row
+                for (int j = 0; j < tupdesc->natts; j++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, j);
+                    bool isnull;
+                    Datum value = SPI_getbinval(tuple, tupdesc, j + 1, &isnull);
+
+                    if (isnull)
+                    {
+                        fields[j] = "NULL";
+                    }
+                    else
+                    {
+                        Oid typoutput;
+                        bool typIsVarlena;
+                        getTypeOutputInfo(attr->atttypid, &typoutput, &typIsVarlena);
+                        fields[j] = OidOutputFunctionCall(typoutput, value);
+                    }
+                }
+
+                entry_id = nextval_internal(label_seq_relid, true);
+                edge_id = make_graphid(label_id, entry_id);
+
+                start_id_int = strtol(fields[0], NULL, 10);
+                start_vertex_type_id = get_label_id(fields[1], graph_oid);
+                end_id_int = strtol(fields[2], NULL, 10);
+                end_vertex_type_id = get_label_id(fields[3], graph_oid);
+
+                start_vertex_graph_id = make_graphid(start_vertex_type_id, start_id_int);
+                end_vertex_graph_id = make_graphid(end_vertex_type_id, end_id_int);
+
+                /* Get the appropriate slot from the batch state */
+                slot = batch_state->slots[batch_state->num_tuples];
+
+                /* Clear the slots contents */
+                ExecClearTuple(slot);
+
+                /* Fill the values in the slot */
+                slot->tts_values[0] = GRAPHID_GET_DATUM(edge_id);
+                slot->tts_values[1] = GRAPHID_GET_DATUM(start_vertex_graph_id);
+                slot->tts_values[2] = GRAPHID_GET_DATUM(end_vertex_graph_id);
+                slot->tts_values[3] = AGTYPE_P_GET_DATUM(
+                    create_agtype_from_list_i(
+                        header, fields,
+                        tupdesc->natts, 4, load_as_agtype));
+                slot->tts_isnull[0] = false;
+                slot->tts_isnull[1] = false;
+                slot->tts_isnull[2] = false;
+                slot->tts_isnull[3] = false;
+
+                /* Make the slot as containing virtual tuple */
+                ExecStoreVirtualTuple(slot);
+                batch_state->num_tuples++;
+
+                if (batch_state->num_tuples >= batch_state->max_tuples)
+                {
+                    /* Insert the batch when it is full (i.e. BATCH_SIZE) */
+                    insert_batch(batch_state, label_name, graph_oid);
+                    batch_state->num_tuples = 0;
+                }
+            }
+
+            total_processed += proc;
+            offset += BATCH_SIZE;
+        }
+
+        pfree(query);
+
+    } while (proc == BATCH_SIZE);
+
+    /* Finish any remaining batch inserts */
+    finish_edge_batch_insert(&batch_state, label_name, graph_oid);
+
+    SPI_finish();
 }
 
 /*
