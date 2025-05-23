@@ -135,6 +135,15 @@ CREATE FUNCTION ag_catalog.load_labels_from_file(graph_name name,
     LANGUAGE c
     AS 'MODULE_PATHNAME';
 
+CREATE FUNCTION ag_catalog.load_labels_from_table(graph_name name,
+                                                 label_name name,
+                                                 table_name name,
+                                                 id_field_exists bool default true,
+                                                 load_as_agtype bool default false)
+    RETURNS void
+    LANGUAGE c
+    AS 'MODULE_PATHNAME';
+
 CREATE FUNCTION ag_catalog.load_edges_from_file(graph_name name,
                                                 label_name name,
                                                 file_path text,

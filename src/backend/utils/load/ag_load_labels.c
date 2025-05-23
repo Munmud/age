@@ -290,6 +290,207 @@ int create_labels_from_csv_file(char *file_path,
     return EXIT_SUCCESS;
 }
 
+int create_labels_from_table(char *table_name,
+                             char *graph_name,
+                             Oid graph_oid,
+                             char *label_name,
+                             int label_id,
+                             bool id_field_exists,
+                             bool load_as_agtype)
+{
+    int ret;
+    int proc;
+    int total_processed = 0;
+    int offset = 0;
+    int curr_seq_num = 0;
+    int64 entry_id;
+    char *query;
+    char *label_seq_name;
+    char **header;
+    char **fields;
+    bool first_batch = true;
+    graphid vertex_id;
+    Oid temp_table_relid;
+    Oid label_seq_relid;
+    HeapTuple tuple;
+    TupleDesc tupdesc;
+    SPITupleTable *tuptable;
+    TupleTableSlot *slot;
+    TupleTableSlot *temp_id_slot;
+    batch_insert_state *batch_state;
+
+    temp_table_relid = RelnameGetRelid(GET_TEMP_VERTEX_ID_TABLE(graph_name));
+    if (!OidIsValid(temp_table_relid))
+    {
+        setup_temp_table_for_vertex_ids(graph_name);
+        temp_table_relid = RelnameGetRelid(GET_TEMP_VERTEX_ID_TABLE(graph_name));
+    }
+
+    label_seq_name = get_label_seq_relation_name(label_name);
+    label_seq_relid = get_relname_relid(label_seq_name, graph_oid);
+
+    if (id_field_exists)
+    {
+        /*
+         * Set the curr_seq_num since we will need it to compare with
+         * incoming entry_id.
+         *
+         * We cant use currval because it will error out if nextval was
+         * not called before in the session.
+         */
+        curr_seq_num = nextval_internal(label_seq_relid, true);
+    }
+
+    init_vertex_batch_insert(&batch_state, label_name, graph_oid,
+                             temp_table_relid);
+
+    // Connect to SPI
+    if ((ret = SPI_connect()) < 0)
+    {
+        elog(ERROR, "SPI_connect failed: %s", SPI_result_code_string(ret));
+        return -1;
+    }
+
+    elog(INFO, "Starting batch processing of table %s in batches of %d",
+         table_name, BATCH_SIZE);
+
+    // Process data in batches
+    do
+    {
+        // Build query with LIMIT and OFFSET for batch processing
+        query = psprintf("SELECT * FROM %s LIMIT %d OFFSET %d",
+                         table_name, BATCH_SIZE, offset);
+
+        // Execute the query
+        ret = SPI_execute(query, true, 0);
+        proc = SPI_processed;
+
+        if (ret > 0 && SPI_tuptable != NULL && proc > 0)
+        {
+            tuptable = SPI_tuptable;
+            tupdesc = tuptable->tupdesc;
+
+            // elog(INFO, "Processing batch starting at offset %d: %d rows", offset, proc);
+
+            // Log column names only for the first batch
+            if (first_batch)
+            {
+                header = malloc((sizeof(char *) * tupdesc->natts));
+
+                // elog(INFO, "Table %s has %d columns:", table_name, tupdesc->natts);
+                for (int i = 0; i < tupdesc->natts; i++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+                    // elog(INFO, "  Column %d: %s (type: %u)", i + 1, NameStr(attr->attname), attr->atttypid);
+                    header[i] = NameStr(attr->attname);
+                }
+                first_batch = false;
+            }
+
+            // Process each tuple/row in this batch
+            for (int i = 0; i < proc; i++)
+            {
+                fields = malloc((sizeof(char *) * tupdesc->natts));
+                tuple = tuptable->vals[i];
+                // elog(INFO, "Row %d (global row %d):", i + 1, total_processed + i + 1);
+
+                // Log each column value in the row
+                for (int j = 0; j < tupdesc->natts; j++)
+                {
+                    Form_pg_attribute attr = TupleDescAttr(tupdesc, j);
+                    bool isnull;
+                    Datum value = SPI_getbinval(tuple, tupdesc, j + 1, &isnull);
+
+                    if (isnull)
+                    {
+                        fields[j] = "NULL";
+                        // elog(INFO, "  %s: NULL", NameStr(attr->attname));
+                    }
+                    else
+                    {
+                        // Convert datum to string representation
+                        Oid typoutput;
+                        bool typIsVarlena;
+                        // char *outputstr;
+
+                        getTypeOutputInfo(attr->atttypid, &typoutput, &typIsVarlena);
+                        // outputstr = OidOutputFunctionCall(typoutput, value);
+                        fields[j] = OidOutputFunctionCall(typoutput, value);
+                    }
+                }
+
+                if (id_field_exists)
+                {
+                    // elog(INFO, "fields[0]: %s",fields[0]) ;
+                    entry_id = strtol(fields[0], NULL, 10);
+                    if (entry_id > curr_seq_num)
+                    {
+                        DirectFunctionCall2(setval_oid,
+                                            ObjectIdGetDatum(label_seq_relid),
+                                            Int64GetDatum(entry_id));
+                        curr_seq_num = entry_id;
+                    }
+                }
+                else
+                {
+                    entry_id = nextval_internal(label_seq_relid, true);
+                }
+
+                vertex_id = make_graphid(label_id, entry_id);
+
+                /* Get the appropriate slot from the batch state */
+                slot = batch_state->slots[batch_state->num_tuples];
+                temp_id_slot = batch_state->temp_id_slots[batch_state->num_tuples];
+
+                // /* Clear the slots contents */
+                ExecClearTuple(slot);
+                ExecClearTuple(temp_id_slot);
+
+                /* Fill the values in the slot */
+                slot->tts_values[0] = GRAPHID_GET_DATUM(vertex_id);
+                slot->tts_values[1] = AGTYPE_P_GET_DATUM(
+                    create_agtype_from_list(header, fields,
+                                            tupdesc->natts, entry_id,
+                                            load_as_agtype));
+                slot->tts_isnull[0] = false;
+                slot->tts_isnull[1] = false;
+
+                temp_id_slot->tts_values[0] = GRAPHID_GET_DATUM(vertex_id);
+                temp_id_slot->tts_isnull[0] = false;
+
+                /* Make the slot as containing virtual tuple */
+                ExecStoreVirtualTuple(slot);
+                ExecStoreVirtualTuple(temp_id_slot);
+
+                batch_state->num_tuples++;
+                if (batch_state->num_tuples >= batch_state->max_tuples)
+                {
+                    /* Insert the batch when it is full (i.e. BATCH_SIZE) */
+                    insert_vertex_batch(batch_state, label_name, graph_oid,
+                                        temp_table_relid);
+                    batch_state->num_tuples = 0;
+                }
+            }
+
+            total_processed += proc;
+            offset += BATCH_SIZE;
+
+            // elog(INFO, "Completed batch. Total rows processed so far: %d", total_processed);
+        }
+        pfree(query);
+
+    } while (proc == BATCH_SIZE); // Continue while we're getting full batches
+
+    finish_vertex_batch_insert(&batch_state, label_name, graph_oid, temp_table_relid);
+
+    elog(INFO, "Finished processing table %s. Total rows processed: %d",
+         table_name, total_processed);
+
+    SPI_finish();
+
+    return total_processed; // Return total number of processed rows
+}
+
 static void insert_vertex_batch(batch_insert_state *batch_state, char *label_name,
                                 Oid graph_oid, Oid temp_table_relid)
 {

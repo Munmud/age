@@ -348,6 +348,64 @@ Datum load_labels_from_file(PG_FUNCTION_ARGS)
     PG_RETURN_VOID();
 }
 
+PG_FUNCTION_INFO_V1(load_labels_from_table);
+Datum load_labels_from_table(PG_FUNCTION_ARGS)
+{
+    Name graph_name;
+    Name label_name;
+    Name table_name;
+    char* graph_name_str;
+    char* label_name_str;
+    char* table_name_str;
+    Oid graph_oid;
+    int32 label_id;
+    bool id_field_exists;
+    bool load_as_agtype;
+
+    if (PG_ARGISNULL(0))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("graph name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(1))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("label name must not be NULL")));
+    }
+
+    if (PG_ARGISNULL(2))
+    {
+        ereport(ERROR, (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                errmsg("file path must not be NULL")));
+    }
+
+    graph_name = PG_GETARG_NAME(0);
+    label_name = PG_GETARG_NAME(1);
+    table_name = PG_GETARG_NAME(2);
+    id_field_exists = PG_GETARG_BOOL(3);
+    load_as_agtype = PG_GETARG_BOOL(4);
+
+    graph_name_str = NameStr(*graph_name);
+    label_name_str = NameStr(*label_name);
+    table_name_str = NameStr(*table_name);
+
+    if (strcmp(label_name_str, "") == 0)
+    {
+        label_name_str = AG_DEFAULT_LABEL_VERTEX;
+    }
+
+
+    graph_oid = get_or_create_graph(graph_name);
+    label_id = get_or_create_label(graph_oid, graph_name_str,
+                                   label_name_str, LABEL_KIND_VERTEX);
+
+    create_labels_from_table(table_name_str, graph_name_str, graph_oid,
+                                label_name_str, label_id, id_field_exists,
+                                load_as_agtype);
+    PG_RETURN_VOID();
+}
+
 PG_FUNCTION_INFO_V1(load_edges_from_file);
 Datum load_edges_from_file(PG_FUNCTION_ARGS)
 {
